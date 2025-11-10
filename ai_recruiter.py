@@ -455,19 +455,21 @@ class SemanticAnalyzer:
         return text
 
     def extract_skill_embeddings(self, skills: List[str], job_skills: List[str]) -> float:
-        """Calculate skill overlap using set similarity and embeddings"""
+        """
+        IMPROVED: Calculate sophisticated skill matching score with industry standards
+        """
         if not job_skills:
-            return 50.0  # No requirements specified, neutral score
+            return 60.0  # Neutral score if no requirements
 
         if not skills:
-            return 0.0  # No skills found in resume
+            return 15.0  # Low score for no skills
 
         # Convert to lowercase sets
         resume_skills = set(s.lower().strip() for s in skills if s)
         required_skills = set(s.lower().strip() for s in job_skills if s)
 
         if not required_skills:
-            return 50.0
+            return 60.0
 
         # Direct exact matches
         exact_matches = len(resume_skills.intersection(required_skills))
@@ -476,7 +478,7 @@ class SemanticAnalyzer:
         partial_matches = 0
         for rs in resume_skills:
             for js in required_skills:
-                if rs != js:  # Not already counted as exact
+                if rs != js and rs not in resume_skills.intersection(required_skills):  # Not already counted
                     if (len(rs) > 3 and rs in js) or (len(js) > 3 and js in rs):
                         partial_matches += 0.5
 
@@ -508,27 +510,32 @@ class SemanticAnalyzer:
                 elif base_in_resume and var_in_job:
                     related_matches += 0.3
 
-        # Calculate final score
-        total_matches = exact_matches + partial_matches + related_matches
-        max_possible = len(required_skills)
+        # Calculate match metrics
+        total_matches = exact_matches + (partial_matches * 0.6) + (related_matches * 0.4)
+        match_ratio = total_matches / len(required_skills)
 
-        # Calculate percentage with bonus for having more skills than required
-        raw_score = (total_matches / max_possible) * 100
+        # INDUSTRY STANDARD SCORING
+        # Top candidates typically have 60-80% skill match
+        # Excellent: 80%+, Good: 60-80%, Average: 40-60%, Poor: <40%
 
-        # Bonus for extra skills (up to 10% bonus)
+        if match_ratio >= 0.80:
+            score = 85 + (match_ratio - 0.80) * 75  # 85-100%
+        elif match_ratio >= 0.60:
+            score = 65 + (match_ratio - 0.60) * 100  # 65-85%
+        elif match_ratio >= 0.40:
+            score = 45 + (match_ratio - 0.40) * 100  # 45-65%
+        elif match_ratio >= 0.20:
+            score = 25 + (match_ratio - 0.20) * 100  # 25-45%
+        else:
+            score = match_ratio * 125  # 0-25%
+
+        # Small bonus for having extra relevant skills (max +8%)
         extra_skills = len(resume_skills) - len(required_skills)
         if extra_skills > 0:
-            bonus = min(10, extra_skills * 2)
-            raw_score += bonus
+            bonus = min(8, extra_skills * 0.8)
+            score += bonus
 
-        # Ensure score is within 0-100 range
-        final_score = max(0, min(100, raw_score))
-
-        return float(final_score)
-        total_matches = exact_matches + partial_matches
-        max_possible = len(required_skills)
-
-        return min((total_matches / max_possible) * 100, 100) if max_possible > 0 else 0
+        return round(min(100, max(0, score)), 2)
 
 
 # ==========================================
@@ -651,19 +658,57 @@ class ScoringEngine:
         return (position_score + frequency_score) / 2
 
     def calculate_experience_score(self, years: float, required_years: float) -> float:
-        """Calculate experience relevance score"""
+        """
+        IMPROVED: Industry-standard experience scoring
+        Real ATS systems are strict about experience requirements
+        """
         if required_years <= 0:
-            return 70.0
+            return 60.0  # Neutral score if no requirement
 
-        if years >= required_years:
-            # Overqualified penalty for 2x+ experience
-            if years > required_years * 2:
-                return 80.0
-            return min(100, 80 + (years - required_years) * 5)
+        # Calculate the ratio
+        ratio = years / required_years if required_years > 0 else 1.0
+
+        # INDUSTRY STANDARD SCORING
+        # ATS systems typically use strict experience matching:
+        # - Exact match or slightly above: 70-85%
+        # - Significantly above: 60-75% (overqualification concern)
+        # - Slightly below: 50-65% (might still be considered)
+        # - Significantly below: 20-45% (usually rejected)
+
+        if ratio >= 1.5:
+            # Overqualified (50-100% more experience than needed)
+            # This can actually be a concern for employers
+            if ratio >= 2.5:
+                score = 55.0  # Too overqualified
+            elif ratio >= 2.0:
+                score = 60.0  # Significantly overqualified
+            else:
+                score = 70.0  # Moderately overqualified
+
+        elif ratio >= 1.0:
+            # Meets or slightly exceeds requirements (IDEAL)
+            # This is the sweet spot for most positions
+            excess_ratio = ratio - 1.0
+            score = 75.0 + (excess_ratio * 20)  # 75-85%
+
+        elif ratio >= 0.75:
+            # Close to requirements (75-99% of required exp)
+            # Still considered, but with some concern
+            score = 55.0 + ((ratio - 0.75) * 80)  # 55-75%
+
+        elif ratio >= 0.50:
+            # Moderately under-qualified (50-74% of required exp)
+            score = 35.0 + ((ratio - 0.50) * 80)  # 35-55%
+
+        elif ratio >= 0.25:
+            # Significantly under-qualified (25-49% of required exp)
+            score = 20.0 + ((ratio - 0.25) * 60)  # 20-35%
+
         else:
-            # Under-qualified penalty
-            ratio = years / required_years
-            return max(20, ratio * 100)
+            # Very under-qualified (<25% of required exp)
+            score = ratio * 80  # 0-20%
+
+        return round(min(100, max(0, score)), 2)
 
     def calculate_education_score(self, education: str, required_education: str) -> float:
         """Calculate education fit score for any field"""
@@ -855,18 +900,45 @@ class MLPipeline:
         return np.array(features).reshape(1, -1)
 
     def predict_suitability(self, features: np.ndarray) -> Tuple[float, str]:
-        """Predict candidate suitability using ensemble"""
-        # Simple rule-based prediction for now
-        # In production, this would use trained models
+        """
+        IMPROVED: More realistic ML scoring with proper normalization
+        """
+        # Extract key features for scoring
+        years_exp = features[0, 0] if features.shape[1] > 0 else 0
+        num_skills = features[0, 1] if features.shape[1] > 1 else 0
+        education_score = features[0, 4] if features.shape[1] > 4 else 50
+        keyword_score = features[0, 5] if features.shape[1] > 5 else 50
+        semantic_score = features[0, 6] if features.shape[1] > 6 else 50
 
-        avg_score = np.mean(features[0, :7]) if features.shape[1] >= 7 else 50
+        # Weighted ML score calculation
+        ml_score = (
+                (semantic_score * 0.30) +
+                (keyword_score * 0.25) +
+                (education_score * 0.20) +
+                (min(years_exp * 10, 100) * 0.15) +  # Cap experience contribution
+                (min(num_skills * 5, 100) * 0.10)  # Cap skills contribution
+        )
 
-        if avg_score >= 70:
-            return avg_score, "HIGH"
-        elif avg_score >= 50:
-            return avg_score, "MEDIUM"
+        # Apply realistic normalization
+        # Most candidates score 40-70% on ML models
+        if ml_score >= 75:
+            normalized = 70 + ((ml_score - 75) * 1.2)  # 70-100%
+        elif ml_score >= 50:
+            normalized = 45 + ((ml_score - 50) * 1.0)  # 45-70%
         else:
-            return avg_score, "LOW"
+            normalized = ml_score * 0.9  # 0-45%
+
+        final_score = min(100, max(0, normalized))
+
+        # Determine confidence
+        if final_score >= 65:
+            confidence = "HIGH"
+        elif final_score >= 45:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+
+        return round(final_score, 2), confidence
 
 
 # ==========================================
@@ -975,7 +1047,7 @@ class IndustryAnalyzer:
             return max(industry_scores, key=industry_scores.get)
         return 'general'
 
-    def check_ats_compatibility(self, resume_text: str) -> Dict[str, any]:
+    def check_ats_compatibility(self, resume_text: str, resume_scores: Dict = None) -> Dict[str, any]:
         """
         Industry-standard ATS compatibility check based on:
         - Taleo (Oracle) - 35% market share
@@ -986,7 +1058,7 @@ class IndustryAnalyzer:
         issues = []
         detailed_scores = {}
 
-        # 1. FILE FORMAT & PARSING SCORE (25% weight)
+        # 1. FILE FORMAT & PARSING SCORE (15% weight)
         parsing_score = 100
 
         # Check for parsing killers
@@ -1017,7 +1089,7 @@ class IndustryAnalyzer:
 
         detailed_scores['parsing'] = max(parsing_score, 0)
 
-        # 2. KEYWORD OPTIMIZATION SCORE (30% weight)
+        # 2. KEYWORD OPTIMIZATION SCORE (10% weight)
         keyword_score = 100
         words = resume_text.lower().split()
         word_count = len(words)
@@ -1045,7 +1117,7 @@ class IndustryAnalyzer:
 
         detailed_scores['keywords'] = max(keyword_score, 0)
 
-        # 3. SECTION STRUCTURE SCORE (25% weight)
+        # 3. SECTION STRUCTURE SCORE (10% weight)
         section_score = 100
         text_lower = resume_text.lower()
 
@@ -1078,7 +1150,7 @@ class IndustryAnalyzer:
 
         detailed_scores['structure'] = max(section_score, 0)
 
-        # 4. CONTACT INFORMATION SCORE (10% weight)
+        # 4. CONTACT INFORMATION SCORE (5% weight)
         contact_score = 100
 
         # Check for email
@@ -1101,7 +1173,7 @@ class IndustryAnalyzer:
 
         detailed_scores['contact'] = max(contact_score, 0)
 
-        # 5. DATE FORMATTING SCORE (10% weight)
+        # 5. DATE FORMATTING SCORE (5% weight)
         date_score = 100
 
         # Check for consistent date formats
@@ -1136,13 +1208,50 @@ class IndustryAnalyzer:
 
         detailed_scores['dates'] = max(date_score, 0)
 
+        # 6. RESUME CONTENT SCORES (50% weight) - New addition
+        # These are the scores from the resume analysis
+        if resume_scores:
+            # Extract individual scores with default values if not present
+            semantic_score = resume_scores.get('semantic_score', 50)
+            skill_match = resume_scores.get('skill_match', 50)
+            keyword_score = resume_scores.get('keyword_score', 50)
+            experience_score = resume_scores.get('experience_score', 50)
+            education_score = resume_scores.get('education_score', 50)
+            cultural_fit = resume_scores.get('cultural_fit', 50)
+            ml_score = resume_scores.get('ml_score', 50)
+
+            # Add these to detailed scores
+            detailed_scores['semantic'] = semantic_score
+            detailed_scores['skill_match'] = skill_match
+            detailed_scores['keyword_score'] = keyword_score
+            detailed_scores['experience_score'] = experience_score
+            detailed_scores['education_score'] = education_score
+            detailed_scores['cultural_fit'] = cultural_fit
+            detailed_scores['ml_score'] = ml_score
+        else:
+            # Default values if no resume scores provided
+            detailed_scores['semantic'] = 50
+            detailed_scores['skill_match'] = 50
+            detailed_scores['keyword_score'] = 50
+            detailed_scores['experience_score'] = 50
+            detailed_scores['education_score'] = 50
+            detailed_scores['cultural_fit'] = 50
+            detailed_scores['ml_score'] = 50
+
         # CALCULATE FINAL WEIGHTED ATS SCORE
         weights = {
-            'parsing': 0.25,
-            'keywords': 0.30,
-            'structure': 0.25,
-            'contact': 0.10,
-            'dates': 0.10
+            'parsing': 0.15,
+            'keywords': 0.10,
+            'structure': 0.10,
+            'contact': 0.05,
+            'dates': 0.05,
+            'semantic': 0.10,
+            'skill_match': 0.10,
+            'keyword_score': 0.10,
+            'experience_score': 0.10,
+            'education_score': 0.10,
+            'cultural_fit': 0.07,
+            'ml_score': 0.08
         }
 
         final_ats_score = sum(detailed_scores[key] * weights[key] for key in weights)
@@ -1178,25 +1287,44 @@ class IndustryAnalyzer:
         """Generate specific recommendations based on ATS analysis"""
         recommendations = []
 
-        if scores['parsing'] < 70:
+        if scores.get('parsing', 100) < 70:
             recommendations.append("Convert resume to plain text format or simple Word doc")
             recommendations.append("Remove all special characters, graphics, and tables")
 
-        if scores['keywords'] < 70:
+        if scores.get('keywords', 100) < 70:
             recommendations.append("Include more industry-specific keywords from job description")
             recommendations.append("Repeat important keywords 2-3 times naturally")
 
-        if scores['structure'] < 70:
+        if scores.get('structure', 100) < 70:
             recommendations.append("Use standard section headers: Experience, Education, Skills")
             recommendations.append("Ensure sections are clearly labeled and separated")
 
-        if scores['contact'] < 70:
+        if scores.get('contact', 100) < 70:
             recommendations.append("Place contact information prominently at the top")
             recommendations.append("Include email, phone, and LinkedIn profile")
 
-        if scores['dates'] < 70:
+        if scores.get('dates', 100) < 70:
             recommendations.append("Use consistent date format (MM/YYYY recommended)")
             recommendations.append("Ensure all positions have clear start and end dates")
+
+        # New recommendations for content scores
+        if scores.get('semantic', 100) < 70:
+            recommendations.append("Include more contextually relevant content matching job requirements")
+
+        if scores.get('skill_match', 100) < 70:
+            recommendations.append("Highlight more skills that match the job requirements")
+
+        if scores.get('experience_score', 100) < 70:
+            recommendations.append("Provide more details about relevant experience")
+
+        if scores.get('education_score', 100) < 70:
+            recommendations.append("Emphasize relevant education and qualifications")
+
+        if scores.get('cultural_fit', 100) < 70:
+            recommendations.append("Include examples that demonstrate alignment with company values")
+
+        if scores.get('ml_score', 100) < 70:
+            recommendations.append("Improve overall resume quality and relevance")
 
         return recommendations
 
@@ -1395,7 +1523,7 @@ class DecisionEngine:
 
         return max(10, min(90, threshold))  # Keep between 10-90
 
-    def ensemble_decision(self, scores: Dict[str, float]) -> Tuple[str, float]:
+    def ensemble_decision(self, scores: Dict[str, float]) -> Tuple[str, float, str]:
         """Make decision using ensemble of models"""
         weighted_score = 0
 
@@ -1644,10 +1772,22 @@ class IndustryStandardRecruiter:
 
         # Step 7: Industry-specific
         industry_type = self.industry.detect_industry(raw_text)
-        ats_check = self.industry.check_ats_compatibility(raw_text)
+
+        # Prepare resume scores for ATS compatibility check
+        resume_scores_for_ats = {
+            'semantic_score': semantic_score,
+            'skill_match': skill_match,
+            'keyword_score': keyword_score,
+            'experience_score': experience_score,
+            'education_score': education_score,
+            'ml_score': ml_score
+        }
+
+        ats_check = self.industry.check_ats_compatibility(raw_text, resume_scores_for_ats)
         candidate_data['industry'] = industry_type
         candidate_data['ats_score'] = ats_check['ats_score']
         candidate_data['ats_issues'] = ats_check['issues']
+        candidate_data['detailed_ats_scores'] = ats_check['detailed_scores']
 
         # Remove bias
         candidate_data = self.industry.remove_bias(candidate_data)
@@ -1664,6 +1804,9 @@ class IndustryStandardRecruiter:
 
         candidate_data['skill_gaps'] = skill_gaps
         candidate_data['cultural_fit'] = cultural_fit
+
+        # Update ATS scores with cultural fit
+        candidate_data['detailed_ats_scores']['cultural_fit'] = cultural_fit
 
         # Step 9: Decision
         threshold = self.decision.determine_threshold(
@@ -2277,6 +2420,74 @@ def extract_certifications_generic(jd_lower: str) -> List[str]:
     return list(dict.fromkeys(certs))  # Remove duplicates
 
 
+def validate_job_requirements(parsed: Dict, job_description: str) -> Dict:
+    """Validate and fill missing fields in parsed job requirements"""
+    # Ensure all required fields exist
+    required_fields = [
+        "required_skills", "preferred_skills", "required_experience",
+        "required_education", "keywords", "key_responsibilities",
+        "company_values", "level", "industry", "technologies",
+        "certifications", "soft_skills", "domain_knowledge"
+    ]
+
+    for field in required_fields:
+        if field not in parsed:
+            parsed[field] = []
+
+    # Extract missing information from job description if needed
+    jd_lower = job_description.lower()
+
+    # Extract skills if missing
+    if not parsed["required_skills"]:
+        # Use fallback extraction
+        fallback = extract_job_requirements_fallback(job_description)
+        parsed["required_skills"] = fallback["required_skills"]
+        parsed["technologies"] = fallback["technologies"]
+        parsed["soft_skills"] = fallback["soft_skills"]
+
+    # Extract experience if missing
+    if not parsed["required_experience"]:
+        exp_patterns = [
+            r'(\d+)\+?\s*(?:to\s+)?(\d+)?\s*years?\s+(?:of\s+)?experience',
+            r'experience[:\s]+(\d+)\+?\s*(?:to\s+)?(\d+)?\s*years?',
+            r'minimum\s+(\d+)\s*years?',
+            r'at\s+least\s+(\d+)\s*years?',
+            r'(\d+)\s*years?\s+minimum'
+        ]
+
+        for pattern in exp_patterns:
+            match = re.search(pattern, jd_lower)
+            if match:
+                parsed["required_experience"] = int(match.group(1))
+                break
+
+        if not parsed["required_experience"]:
+            # Default based on level
+            if "senior" in jd_lower:
+                parsed["required_experience"] = 5
+            elif "junior" in jd_lower or "entry" in jd_lower:
+                parsed["required_experience"] = 1
+            else:
+                parsed["required_experience"] = 2
+
+    # Extract education if missing
+    if not parsed["required_education"]:
+        education = extract_education_requirement(jd_lower)
+        parsed["required_education"] = education
+
+    # Extract industry if missing
+    if not parsed["industry"]:
+        industry = detect_industry_generic(jd_lower)
+        parsed["industry"] = industry
+
+    # Extract level if missing
+    if not parsed["level"]:
+        level = determine_job_level(jd_lower, parsed["required_experience"])
+        parsed["level"] = level
+
+    return parsed
+
+
 # ==========================================
 # FastAPI Endpoints
 # ==========================================
@@ -2384,9 +2595,7 @@ async def download_results(session_id: str):
     )
 
 
-# HTML Frontend (Industry Standard UI)
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
+HTML_TEMPLATE = ''' <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2759,6 +2968,31 @@ HTML_TEMPLATE = '''
             font-size: 0.85rem;
             color: #666;
         }
+
+        .ats-scores-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 10px;
+        }
+
+        .ats-score-item {
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .ats-score-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #1e3c72;
+        }
+
+        .ats-score-label {
+            font-size: 0.85rem;
+            color: #666;
+        }
     </style>
 </head>
 <body>
@@ -2827,7 +3061,6 @@ HTML_TEMPLATE = '''
                     <div class="pipeline-step" id="step9">Decision</div>
                     <div class="pipeline-step" id="step10">QA</div>
                 </div>
-                <p style="margin-top: 20px; color: #6c757d;">Processing with Groq LLaMA 3.3 70B...</p>
             </div>
 
             <div class="results-section">
@@ -2996,28 +3229,6 @@ HTML_TEMPLATE = '''
             const avgScore = data.results.reduce((sum, r) => sum + (r.final_score || 0), 0) / data.results.length;
             document.getElementById('avgScore').textContent = avgScore.toFixed(1) + '%';
 
-            // Display audit metrics
-            if (data.audit_report) {
-                const metricsHtml = `
-                    <div class="metric-item">
-                        <div class="metric-value">${(data.audit_report.performance_metrics?.precision * 100 || 0).toFixed(1)}%</div>
-                        <div class="metric-label">Precision</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-value">${(data.audit_report.performance_metrics?.f1_score * 100 || 0).toFixed(1)}%</div>
-                        <div class="metric-label">F1 Score</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-value">${data.audit_report.confidence_distribution?.HIGH || 0}</div>
-                        <div class="metric-label">High Confidence</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-value">${data.audit_report.confidence_distribution?.MEDIUM || 0}</div>
-                        <div class="metric-label">Medium Confidence</div>
-                    </div>
-                `;
-                document.getElementById('auditMetrics').innerHTML = metricsHtml;
-            }
 
             // Build table
             const tbody = document.getElementById('resultsTableBody');
@@ -3057,28 +3268,40 @@ HTML_TEMPLATE = '''
 
             const modalBody = document.getElementById('modalBody');
             modalBody.innerHTML = `
-                <div class="detail-group">
-                    <h4>📊 Comprehensive Scores</h4>
-                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-                        <div>Overall Score: ${(result.overall_score || 0).toFixed(1)}%</div>
-                        <div>Final Score: ${(result.final_score || 0).toFixed(1)}%</div>
-                        <div>Semantic Score: ${(result.semantic_score || 0).toFixed(1)}%</div>
-                        <div>Skill Match: ${(result.skill_match || 0).toFixed(1)}%</div>
-                        <div>Keyword Score: ${(result.keyword_score || 0).toFixed(1)}%</div>
-                        <div>Experience Score: ${(result.experience_score || 0).toFixed(1)}%</div>
-                        <div>Education Score: ${(result.education_score || 0).toFixed(1)}%</div>
-                        <div>ATS Score: ${(result.ats_score || 0).toFixed(1)}%</div>
-                        <div>Cultural Fit: ${(result.cultural_fit || 0).toFixed(1)}%</div>
-                        <div>ML Score: ${(result.ml_score || 0).toFixed(1)}%</div>
-                    </div>
-                </div>
+               
 
                 <div class="detail-group">
-                    <h4>🎯 Decision Details</h4>
-                    <p><strong>Decision:</strong> ${result.decision}</p>
-                    <p><strong>Confidence:</strong> ${result.confidence}</p>
-                    <p><strong>Explanation:</strong> ${result.decision_explanation || 'N/A'}</p>
-                    <p><strong>Threshold Used:</strong> ${result.threshold_used || currentThreshold}%</p>
+                    <h4>📈 ATS Score Breakdown</h4>
+                    <div class="ats-scores-grid">
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.semantic || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">Semantic Score</div>
+                        </div>
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.skill_match || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">Skill Match</div>
+                        </div>
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.keyword_score || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">Keyword Score</div>
+                        </div>
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.experience_score || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">Experience Score</div>
+                        </div>
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.education_score || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">Education Score</div>
+                        </div>
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.cultural_fit || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">Cultural Fit</div>
+                        </div>
+                        <div class="ats-score-item">
+                            <div class="ats-score-value">${(result.detailed_ats_scores?.ml_score || 0).toFixed(1)}%</div>
+                            <div class="ats-score-label">ML Score</div>
+                        </div>
+                    </div>
                 </div>
 
                 ${result.skill_gaps ? `
@@ -3105,28 +3328,7 @@ HTML_TEMPLATE = '''
 
                 ${result.ats_issues && result.ats_issues.length > 0 ? `
                 <div class="detail-group">
-                    <h4>⚠️ ATS Compatibility Analysis</h4>
-                    <div style="background: ${result.ats_score < 50 ? '#ffe3e3' : result.ats_score < 70 ? '#fff4e6' : '#e6f7ff'}; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                        <h5>Overall ATS Score: ${(result.ats_score || 0).toFixed(1)}%</h5>
-                        <p><strong>Compatibility Level:</strong> ${result.compatibility_level || 'N/A'}</p>
-                        <p><strong>Risk Level:</strong> ${result.risk_level || 'N/A'}</p>
-                    </div>
 
-                    ${result.detailed_scores ? `
-                    <h5>Detailed ATS Breakdown:</h5>
-                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 15px;">
-                        <div>📄 Parsing Score: ${(result.detailed_scores.parsing || 0).toFixed(1)}%</div>
-                        <div>🔑 Keywords Score: ${(result.detailed_scores.keywords || 0).toFixed(1)}%</div>
-                        <div>📋 Structure Score: ${(result.detailed_scores.structure || 0).toFixed(1)}%</div>
-                        <div>📧 Contact Info: ${(result.detailed_scores.contact || 0).toFixed(1)}%</div>
-                        <div>📅 Date Formatting: ${(result.detailed_scores.dates || 0).toFixed(1)}%</div>
-                    </div>
-                    ` : ''}
-
-                    <h5>Issues Detected:</h5>
-                    <ul style="color: #d32f2f;">
-                        ${result.ats_issues.map(issue => `<li>${issue}</li>`).join('')}
-                    </ul>
 
                     ${result.recommendations && result.recommendations.length > 0 ? `
                     <h5>Recommendations:</h5>
@@ -3136,14 +3338,6 @@ HTML_TEMPLATE = '''
                     ` : ''}
                 </div>
                 ` : ''}
-
-                <div class="detail-group">
-                    <h4>🏢 Additional Information</h4>
-                    <p><strong>Industry:</strong> ${result.industry || 'N/A'}</p>
-                    <p><strong>Years of Experience:</strong> ${result.years_experience || 0}</p>
-                    <p><strong>Percentile Rank:</strong> ${result.percentile_rank || 'N/A'}%</p>
-                    <p><strong>Weighted Score:</strong> ${result.weighted_score || 'N/A'}</p>
-                </div>
             `;
 
             document.getElementById('detailsModal').classList.add('active');
@@ -3178,8 +3372,7 @@ HTML_TEMPLATE = '''
         });
     </script>
 </body>
-</html>
-'''
+</html>'''
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3211,4 +3404,4 @@ if __name__ == "__main__":
     print(" 10. Quality Assurance & Audit")
     print("=" * 60 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(app, reload=False)
