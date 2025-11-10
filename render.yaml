@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ai-recruiter
+    runtime: python
+    buildCommand: |
+      pip install -r requirements.txt
+      python -m nltk.downloader punkt stopwords wordnet averaged_perceptron_tagger maxent_ne_chunker words
+    startCommand: uvicorn ai_recruiter:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: GROQ_API_KEY
+        sync: false  # Add this in Render dashboard for security
+      - key: PORT
+        value: 10000
+    autoDeploy: true
+    plan: free  # or 'starter' for paid plan
